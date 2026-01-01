@@ -1,72 +1,111 @@
-from django.shortcuts import render,redirect,get_object_or_404
+from django.shortcuts import render,redirect, get_object_or_404
+from django.contrib.auth.models import User
 from django.contrib import messages as django_messages
-from .models import User,Message
-from .forms import UserForm,MessageForm,MessageEditForm
+from .forms import *
+from django.core.paginator import Paginator
+from django.contrib.auth import login,logout,authenticate
+from django.contrib.auth.forms import AuthenticationForm
+from django.contrib.auth.decorators import login_required
 
+
+#РЕГИСТРАЦИR
 def register(request):
     if request.method == 'POST':
-        form = UserForm(request.POST)
+        form = RegisterForm(request.POST)
         if form.is_valid():
             user = form.save()
-            request.session['user_id'] = user.id
-            return redirect('chat')
+            login(request, user)
+            return redirect('vlog')
     else:
-        form = UserForm()
-    return render(request,'register.html',{'form':form})
+        form = RegisterForm()
+    return render(request, 'register.html', {'form': form})
 
-def chat(request):
-    user_id = request.session.get('user_id')
-    if not user_id:
-        return redirect('register')
 
-    user = User.objects.get(id=user_id)
+def user_login(request):
+    if request.method == "POST":
+        username = request.POST['username']
+        password = request.POST['password']
+        user = authenticate(request, username=username, password=password)
+        if user is not None:
+            login(request, user)
+            return redirect('vlog')
+        else:
+            return render(request, 'login.html', {'error': 'Неверные данные'})
+    return render(request, 'login.html')
 
-    messages_list = Message.objects.filter(is_deleted=False).order_by('timestamp')
-    deleted_messages = Message.objects.filter(user=user, is_deleted=True).order_by('timestamp')
+def user_logout(request):
+    logout(request)
+    return redirect('login')
+
+#ПОКАЗ ВСЕХ СТАТЕЙ
+def article_list(request):
+    articles = Article.objects.filter(is_deleted=False).order_by('-pub_date')
+
+    paginator = Paginator(articles, 10)
+    page = request.GET.get('page')
+    page_obj = paginator.get_page(page)
 
     form = MessageForm()
+
+    deleted_articles = Article.objects.filter(is_deleted=True, author=request.user) if request.user.is_authenticated else []
+
     if request.method == 'POST':
+        if not request.user.is_authenticated:
+            return redirect('login')
 
-        # 🔴 DELETE
-        if 'message_delete_id' in request.POST:
-            msg = Message.objects.filter(id=request.POST['message_delete_id'], user=user).first()
-            if msg:
-                msg.is_deleted = True
+        if 'create_article' in request.POST:
+            form = MessageForm(request.POST,request.FILES)
+            if form.is_valid():
+                msg = form.save(commit=False)
+                msg.author = request.user
                 msg.save()
-                django_messages.success(request, "Сообщение успешно удалено")
-            return redirect('chat')
+                return redirect('vlog')
 
-        if 'message_restore_id' in request.POST:
-            msg = Message.objects.filter(id=request.POST['message_restore_id'], user=user).first()
-            if msg:
-                msg.is_deleted = False
-                msg.save()
-                django_messages.success(request, "Сообщение восстановлено")
-            return redirect('chat')
 
-        # 🟡 EDIT
-        if 'edit_message_id' in request.POST and 'message' in request.POST:
-            msg = Message.objects.filter(
-                id=request.POST['edit_message_id'],
-                user=user
-            ).first()
-            if msg:
-                msg.text = request.POST['message']
-                msg.save()
-                django_messages.success(request, "Сообщение успешно изменено")
-                return redirect('chat')
+            #ИЗМЕНИТЬ СТАТЬЮ
+        elif 'edit_article_id' in request.POST:
+            msg = get_object_or_404(Article, id=request.POST['edit_article_id'], author=request.user)
+            msg.title = request.POST.get('title', msg.title)
+            msg.content = request.POST.get('content', msg.content)
 
-        # 🟢 CREATE
-        form = MessageForm(request.POST)
-        if form.is_valid():
-            msg = form.save(commit=False)
-            msg.user = user
+            if 'image' in request.FILES:
+                msg.image = request.FILES['image']
+
             msg.save()
-            return redirect('chat')
 
-    return render(request, 'chat.html', {
-        'messages_list': messages_list,
-        'deleted_messages': deleted_messages,
-        'form': form,
-        'user': user
+            django_messages.success(request, "Статья изменена")
+            return redirect('vlog')
+
+            #УДАЛИТЬ СТАТЬЮ
+        elif 'article_delete_id' in request.POST:
+            msg = get_object_or_404(Article, id=request.POST['article_delete_id'], author=request.user)
+            msg.is_deleted = True
+            msg.save()
+            django_messages.success(request, "Статья удалена")
+            return redirect('vlog')
+
+            #ВОССТАНОВИТЬ СТАТЬЮ
+        elif 'article_restore_id' in request.POST:
+            msg = get_object_or_404(Article, id=request.POST['article_restore_id'], author=request.user, is_deleted=True)
+            msg.is_deleted = False
+            msg.save()
+            django_messages.success(request, "Статья восстановлена")
+            return redirect('vlog')
+
+    return render(request, 'vlog.html', {
+        'page_obj': page_obj,
+        'messages_list': articles,
+        'deleted_articles': deleted_articles,
+        'form': form
     })
+
+@login_required
+def toggle_like(request, pk):
+    article = get_object_or_404(Article, pk=pk)
+    if not request.user.is_authenticated:
+        return redirect('login')
+    if request.user in article.likes.all():
+        article.likes.remove(request.user)
+    else:
+        article.likes.add(request.user)
+    return redirect('vlog')
